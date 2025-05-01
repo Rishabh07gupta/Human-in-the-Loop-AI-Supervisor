@@ -1,0 +1,44 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h1>Pending Help Requests</h1>
+        <div class="alert alert-info" role="alert">
+            These requests are waiting for your response. Customers have been informed that we'll get back to them.
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        {% if requests %}
+            <div class="list-group">
+                {% for request in requests %}
+                <div class="list-group-item">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">Request #{{ request.id }} - Customer {{ request.customer_id }}</h5>
+                        <small>{{ request.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                    </div>
+                    <p class="mb-1"><strong>Question:</strong> {{ request.question }}</p>
+                    <div class="mt-3">
+                        <form class="resolve-form" data-request-id="{{ request.id }}">
+                            <div class="mb-3">
+                                <label for="answer-{{ request.id }}" class="form-label">Your Answer:</label>
+                                <textarea class="form-control" id="answer-{{ request.id }}" name="answer" rows="3" required></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-success">Resolve</button>
+                            <button type="button" class="btn btn-danger mark-unresolved" data-request-id="{{ request.id }}">Mark Unresolved</button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="alert alert-success" role="alert">
+                No pending requests at this time! Great job!
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

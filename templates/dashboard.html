@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h1>Supervisor Dashboard</h1>
+        <div class="alert alert-info" role="alert">
+            This is the internal administrative dashboard for managing AI supervisor interactions.
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-3">
+        <div class="card text-white bg-primary">
+            <div class="card-body">
+                <h5 class="card-title">Pending Requests</h5>
+                <p class="card-text display-4">{{ stats.pending }}</p>
+                <a href="{{ url_for('pending_requests') }}" class="btn btn-light">View</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-success">
+            <div class="card-body">
+                <h5 class="card-title">Resolved Requests</h5>
+                <p class="card-text display-4">{{ stats.resolved }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-danger">
+            <div class="card-body">
+                <h5 class="card-title">Unresolved Requests</h5>
+                <p class="card-text display-4">{{ stats.unresolved }}</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-white bg-info">
+            <div class="card-body">
+                <h5 class="card-title">Knowledge Items</h5>
+                <p class="card-text display-4">{{ stats.knowledge }}</p>
+                <a href="{{ url_for('knowledge_base') }}" class="btn btn-light">View</a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        <div class="card">
+            <div class="card-header">
+                System Status
+            </div>
+            <div class="card-body">
+                <h5 class="card-title">System is operational</h5>
+                <p class="card-text">The AI supervisor system is running and processing requests.</p>
+                <div class="progress">
+                    <div class="progress-bar bg-success" role="progressbar" style="width: 100%" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

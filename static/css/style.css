@@ -1,0 +1,61 @@
+/* Custom styles for Frontdesk AI Supervisor */
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f8f9fa;
+}
+
+.navbar-brand {
+    font-weight: bold;
+}
+
+.card {
+    margin-bottom: 20px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.card-header {
+    font-weight: bold;
+}
+
+.list-group-item {
+    border-left: 5px solid #007bff;
+}
+
+.list-group-item:hover {
+    background-color: #f8f9fa;
+}
+
+.resolve-form {
+    border-top: 1px solid #dee2e6;
+    padding-top: 15px;
+    margin-top: 10px;
+}
+
+.accordion-button:not(.collapsed) {
+    background-color: #e7f1ff;
+    color: #0c63e4;
+}
+
+#simulationOutput {
+    font-family: monospace;
+    white-space: pre-wrap;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.ai-message {
+    color: #0d6efd;
+    margin: 5px 0;
+}
+
+.system-message {
+    color: #6c757d;
+    font-style: italic;
+    margin: 5px 0;
+}
+
+.customer-message {
+    color: #198754;
+    margin: 5px 0;
+}

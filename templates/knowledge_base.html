@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="row">
+    <div class="col-md-12">
+        <h1>Knowledge Base</h1>
+        <div class="alert alert-info" role="alert">
+            This is the AI's knowledge base that automatically updates with your answers.
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-md-12">
+        {% if items %}
+            <div class="accordion" id="knowledgeAccordion">
+                {% for item in items %}
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="heading{{ item.id }}">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" 
+                                data-bs-target="#collapse{{ item.id }}" aria-expanded="false" aria-controls="collapse{{ item.id }}">
+                            {{ item.question }}
+                        </button>
+                    </h2>
+                    <div id="collapse{{ item.id }}" class="accordion-collapse collapse" aria-labelledby="heading{{ item.id }}" data-bs-parent="#knowledgeAccordion">
+                        <div class="accordion-body">
+                            <p><strong>Answer:</strong> {{ item.answer }}</p>
+                            <small class="text-muted">Last updated: {{ item.updated_at.strftime('%Y-%m-%d %H:%M:%S') }}</small>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="alert alert-warning" role="alert">
+                No knowledge items yet. They will appear here as you resolve help requests.
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
