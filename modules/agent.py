@@ -83,6 +83,18 @@ class SalonAgent(Agent):
         except Exception as e:
             logger.error(f"Failed to sync help request to Flask supervisor: {e}")
         
+        max_checks = 20  # Check up to 20 times (about 1 minute with 3 second intervals)
+        checks = 0
+        
+        while checks < max_checks:
+            checks += 1
+            await asyncio.sleep(3)  # Check every 3 seconds
+            
+            answer = await self._check_for_resolved_requests(context, help_request.id)
+            if answer:
+                # If we got an answer, notify the customer
+                return f"My supervisor has responded: {answer}"
+            
         return "I'll check with my supervisor and get back to you as soon as possible."
     
     def _sync_request_to_flask(self, help_request):
@@ -115,6 +127,23 @@ class SalonAgent(Agent):
         except Exception as e:
             logger.error(f"Error syncing request to Flask: {e}")
             raise
+    
+    async def _check_for_resolved_requests(self, context: RunContext, request_id: int):
+        """
+        Check if a help request has been resolved by the supervisor.
+        """
+        try:
+            endpoint = f"{FLASK_API_URL}/api/check-request/{request_id}"
+            response = requests.get(endpoint, timeout=5)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data['status'] == 'resolved':
+                    return data['answer']
+            return None
+        except Exception as e:
+            logger.error(f"Error checking request status: {e}")
+            return None
 
 
 async def entrypoint(ctx: JobContext):

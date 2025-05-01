@@ -345,6 +345,23 @@ def register_routes(app):
         except Exception as e:
             logger.error(f"Error syncing request from agent: {str(e)}")
             return jsonify({'success': False, 'error': str(e)}), 500
+    
+    @app.route('/api/check-request/<int:request_id>')
+    def check_request_status(request_id):
+        try:
+            help_request = get_help_request(request_id)
+            
+            if not help_request:
+                return jsonify({'error': 'Request not found'}), 404
+            
+            return jsonify({
+                'id': help_request.id,
+                'status': help_request.status,
+                'answer': help_request.answer if help_request.status == 'resolved' else None
+            })
+        except Exception as e:
+            logger.error(f"Error checking request status: {str(e)}")
+            return jsonify({'error': str(e)}), 500
 
     @app.route('/simulate/call', methods=['GET'])
     def simulate_call():
