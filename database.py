@@ -5,14 +5,13 @@ from flask_sqlalchemy import SQLAlchemy
 db = SQLAlchemy()
 
 class HelpRequest(db.Model):
-    """Model for tracking customer help requests."""
     __tablename__ = 'help_requests'
-    
     id = db.Column(db.Integer, primary_key=True)
     customer_id = db.Column(db.String(50), nullable=False)
     question = db.Column(db.Text, nullable=False)
-    status = db.Column(db.String(20), nullable=False, default='pending')  # pending, resolved, unresolved
+    status = db.Column(db.String(20), default='pending')
     answer = db.Column(db.Text)
+    webhook_url = db.Column(db.String(200))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     resolved_at = db.Column(db.DateTime)
     

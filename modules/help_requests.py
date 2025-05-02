@@ -1,6 +1,7 @@
 from datetime import datetime
 import logging
 from typing import List, Optional, Dict
+import requests
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -28,59 +29,62 @@ def is_flask_context_available():
     except Exception:
         return False
 
-def create_help_request(customer_id: str, question: str):
-    """
-    Create a new help request, works with or without Flask context.
-    
-    Args:
-        customer_id: Identifier for the customer (e.g., room ID, phone number)
-        question: The question the customer asked
-        
-    Returns:
-        The created HelpRequest object or MockHelpRequest if outside Flask context
-    """
+def create_help_request(customer_id: str, question: str, webhook_url: str):
     try:
-        # Try to use Flask-SQLAlchemy
         from database import db, HelpRequest
-        
-        if not is_flask_context_available():
-            raise ValueError("No Flask app context")
-        
         help_request = HelpRequest(
             customer_id=customer_id,
             question=question,
-            status='pending'
+            status='pending',
+            webhook_url=webhook_url
         )
-        
         db.session.add(help_request)
         db.session.commit()
-        
-        # Add to memory too for consistency
-        global memory_help_requests
         memory_help_requests[help_request.id] = help_request
-        
-        logger.info(f"Help request created in database: {help_request.id}")
         return help_request
-    
     except Exception as e:
-        # If Flask context is not available, use in-memory storage
-        logger.warning(f"Could not create help request in database: {e}. Using in-memory storage.")
         global next_request_id
-        
-        # Create a mock help request
         help_request = MockHelpRequest(
             id=next_request_id,
             customer_id=customer_id,
             question=question
         )
-        
-        # Store it in memory
+        help_request.webhook_url = webhook_url
         memory_help_requests[next_request_id] = help_request
         next_request_id += 1
-        
-        logger.info(f"Help request created in memory: {help_request.id}")
         return help_request
 
+def resolve_request(request_id: int, answer: str):
+    help_request = get_help_request(request_id)
+    if not help_request:
+        return None
+    
+    try:
+        from database import db
+        help_request.status = 'resolved'
+        help_request.answer = answer
+        help_request.resolved_at = datetime.utcnow()  # Make sure to set resolved_at
+        db.session.commit()
+        
+        # Add to knowledge base
+        from modules.knowledge_base import add_to_knowledge_base
+        add_to_knowledge_base(help_request.question, answer)
+        
+        if help_request.webhook_url:
+            requests.post(
+                f"{help_request.webhook_url}/{help_request.id}",
+                json={'answer': answer},
+                timeout=5
+            )
+    except Exception as e:
+        help_request.status = 'resolved'
+        help_request.answer = answer
+        # Still try to add to knowledge base even if DB fails
+        from modules.knowledge_base import add_to_knowledge_base
+        add_to_knowledge_base(help_request.question, answer)
+    
+    print(f"[Customer SMS] Answer: {answer}")
+    return help_request
 
 def get_knowledge_for_question(question: str):
     """
@@ -163,61 +167,4 @@ def mark_request_unresolved(request_id: int):
         help_request.status = 'unresolved'
     
     logger.info(f"Help request {request_id} marked as unresolved")
-    return help_request
-
-
-def resolve_request(request_id: int, answer: str):
-    """
-    Resolve a help request with an answer.
-    
-    Args:
-        request_id: ID of the help request
-        answer: Answer provided by the supervisor
-        
-    Returns:
-        The updated HelpRequest object or None if request not found
-    """
-    help_request = get_help_request(request_id)
-    if not help_request:
-        logger.error(f"Help request {request_id} not found")
-        return None
-    
-    try:
-        # Try to use database
-        from database import db
-        
-        if not is_flask_context_available():
-            raise ValueError("No Flask app context")
-            
-        help_request.status = 'resolved'
-        help_request.answer = answer
-        help_request.resolved_at = datetime.utcnow()
-        
-        db.session.commit()
-        
-        # Add this answer to the knowledge base
-        from modules.knowledge_base import add_to_knowledge_base
-        try:
-            add_to_knowledge_base(help_request.question, answer)
-        except Exception as kb_error:
-            logger.warning(f"Could not add to knowledge base: {kb_error}")
-    
-    except Exception as e:
-        # If Flask context is not available, update in-memory
-        logger.warning(f"Could not update help request in database: {e}. Using in-memory storage.")
-        help_request.status = 'resolved'
-        help_request.answer = answer
-        help_request.resolved_at = datetime.utcnow()
-        
-        # Try to add to knowledge base (in-memory)
-        from modules.knowledge_base import add_to_knowledge_base
-        try:
-            add_to_knowledge_base(help_request.question, answer)
-        except Exception as kb_error:
-            logger.warning(f"Could not add to knowledge base: {kb_error}")
-    
-    # Simulate notifying the customer
-    print(f"[Customer SMS] Hello! This is Bella from the salon. Regarding your question: '{help_request.question}', here's the answer: {answer}")
-    
-    logger.info(f"Help request {request_id} resolved")
     return help_request

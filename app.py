@@ -41,6 +41,7 @@ def create_app(config_class=Config):
     register_routes(app)
     
     with app.app_context():
+        db.create_all()
         sync_memory_storage()
         
         if not getattr(app, '_timeout_checker_started', False):
@@ -135,7 +136,6 @@ def init_db_command():
                 click.echo(f'Error creating instance directory: {str(e)}')
                 raise
         
-
         click.echo(f"Database URI: {current_app.config['SQLALCHEMY_DATABASE_URI']}")
         
         db_path = os.path.join(instance_path, "supervisor.db")
@@ -151,8 +151,6 @@ def init_db_command():
         except Exception as e:
             click.echo(f"Warning: Cannot write to instance directory: {str(e)}")
         
-        click.echo('Creating database tables...')
-        db.create_all()
         click.echo('Initializing sample data...')
         init_sample_salon_data()
         click.echo('Initialized the database and added sample data.')
@@ -168,7 +166,6 @@ def init_db_command():
 
 def initialize_app():
     """Function to initialize app data (can be called from shell)"""
-    db.create_all()
     init_sample_salon_data()
     # Sync memory storage
     sync_memory_storage()
@@ -226,6 +223,9 @@ def register_routes(app):
             help_request = resolve_request(request_id, answer)
             if not help_request:
                 return jsonify({'success': False, 'error': 'Request not found'}), 404
+            
+            from modules.knowledge_base import add_to_knowledge_base
+            add_to_knowledge_base(help_request.question, answer)
                 
             return jsonify({
                 'success': True, 
@@ -290,60 +290,26 @@ def register_routes(app):
             logger.error(f"Error getting request details: {str(e)}")
             return jsonify({'error': str(e)}), 500
     
-   # From your app.py - this endpoint looks correct
     @app.route('/api/sync-request', methods=['POST'])
     def sync_request_from_agent():
         try:
             data = request.json
-            
-            if not data:
-                return jsonify({'success': False, 'error': 'No data provided'}), 400
-            
-            if 'question' not in data or 'customer_id' not in data:
-                return jsonify({'success': False, 'error': 'Missing required fields'}), 400
-            
-            # Check if this request already exists in the database
-            existing_request = None
-            if 'id' in data:
-                existing_request = get_help_request(data['id'])
+            existing_request = HelpRequest.query.get(data['id']) if 'id' in data else None
             
             if existing_request:
-                # Request exists, update if needed
-                logger.info(f"Request already exists with ID {data['id']}, updating if needed")
-                return jsonify({'success': True, 'message': 'Request already exists', 'id': existing_request.id})
+                return jsonify({'success': True, 'id': existing_request.id})
                 
-            from database import db, HelpRequest
-            created_at = None
-            if 'created_at' in data:
-                try:
-                    created_at = datetime.fromisoformat(data['created_at'])
-                except (ValueError, TypeError):
-                    created_at = datetime.utcnow()
-            
-            # Create new request
             new_request = HelpRequest(
                 customer_id=data['customer_id'],
                 question=data['question'],
                 status='pending',
-                created_at=created_at or datetime.utcnow()
+                webhook_url=data['webhook_url'],
+                created_at=datetime.fromisoformat(data['created_at'])
             )
-            
             db.session.add(new_request)
             db.session.commit()
-            
-            global memory_help_requests
-            memory_help_requests[new_request.id] = new_request
-            
-            logger.info(f"Successfully synced request from agent to database, ID: {new_request.id}")
-            
-            return jsonify({
-                'success': True, 
-                'message': 'Request synced successfully',
-                'id': new_request.id
-            })
-            
+            return jsonify({'success': True, 'id': new_request.id})
         except Exception as e:
-            logger.error(f"Error syncing request from agent: {str(e)}")
             return jsonify({'success': False, 'error': str(e)}), 500
     
     @app.route('/api/check-request/<int:request_id>')
