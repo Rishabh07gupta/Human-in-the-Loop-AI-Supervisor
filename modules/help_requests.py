@@ -3,6 +3,7 @@ import logging
 from typing import List, Optional, Dict
 import requests
 from database import db, HelpRequest
+from modules.notifications import notification_service
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -36,13 +37,17 @@ def is_flask_context_available():
 
 def create_help_request(customer_id: str, question: str, webhook_url: str):
     try:
-        # Existing database code
         from database import db, HelpRequest
         help_request = HelpRequest(
             customer_id=customer_id,
             question=question,
             status='pending',
             webhook_url=webhook_url
+        )
+        notification_service.notify_supervisor(
+            request_id=help_request.id,
+            question=question,
+            customer_id=customer_id
         )
         db.session.add(help_request)
         db.session.commit()

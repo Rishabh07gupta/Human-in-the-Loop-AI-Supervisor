@@ -110,6 +110,10 @@ def check_request_timeouts(app):
             for req in timed_out_requests:
                 req.status = 'unresolved'
                 logger.info(f"Request {req.id} timed out and marked unresolved")
+                logger.warning(
+                    f"Request {req.id} timed out after {timeout_minutes} minutes. "
+                    f"Question: {req.question[:100]}..."
+                )
    
                 if req.id in memory_help_requests:
                     memory_help_requests[req.id].status = 'unresolved'
@@ -199,7 +203,6 @@ def register_routes(app):
             return render_template('dashboard.html', stats=stats)
         except Exception as e:
             logger.error(f"Error loading dashboard: {e}")
-            return render_template('error.html', error=str(e))
 
     # Pending requests route
     @app.route('/pending')
@@ -209,7 +212,6 @@ def register_routes(app):
             return render_template('pending_requests.html', requests=requests)
         except Exception as e:
             logger.error(f"Error loading pending requests: {e}")
-            return render_template('error.html', error=str(e))
 
     # Resolve request route
     @app.route('/resolve/<int:request_id>', methods=['POST'])
@@ -266,7 +268,6 @@ def register_routes(app):
             return render_template('knowledge_base.html', items=knowledge_items)
         except Exception as e:
             logger.error(f"Error loading knowledge base: {e}")
-            return render_template('error.html', error=str(e))
 
     # API route for request details
     @app.route('/api/request/<int:request_id>')
@@ -408,15 +409,21 @@ def register_routes(app):
         except Exception as e:
             logger.error(f"Error querying knowledge base: {e}")
             return jsonify({'success': False, 'error': str(e)}), 500
-
-    @app.route('/simulate/call', methods=['GET'])
-    def simulate_call():
-        return render_template('simulate_call.html')
-
-    @app.route('/error')
-    def error():
-        error_message = request.args.get('error', 'An unknown error occurred')
-        return render_template('error.html', error=error_message)
+    
+    @app.route('/unresolved')
+    def unresolved_requests():
+        """View for stale unresolved requests"""
+        try:
+            stale_time = datetime.utcnow() - timedelta(hours=24)  # Configurable threshold
+            requests = HelpRequest.query.filter(
+                HelpRequest.status == 'unresolved',
+                HelpRequest.created_at < stale_time
+            ).order_by(HelpRequest.created_at).all()
+            
+            return render_template('unresolved_requests.html', requests=requests)
+        except Exception as e:
+            logger.error(f"Error loading unresolved requests: {e}")
+            return render_template('error.html', error=str(e))
 
 app = create_app()
 

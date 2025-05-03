@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Stale Unresolved Requests (Older than 24h)</h2>
+<table class="table">
+    <!-- Similar to your pending_requests.html table -->
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Customer</th>
+            <th>Question</th>
+            <th>Created</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for req in requests %}
+        <tr>
+            <td>{{ req.id }}</td>
+            <td>{{ req.customer_id }}</td>
+            <td>{{ req.question }}</td>
+            <td>{{ req.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td>
+                <form action="{{ url_for('resolve', request_id=req.id) }}" method="POST">
+                    <input type="text" name="answer" placeholder="Answer..." required>
+                    <button type="submit" class="btn btn-sm btn-primary">Resolve</button>
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endblock %}
