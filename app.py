@@ -412,14 +412,9 @@ def register_routes(app):
     
     @app.route('/unresolved')
     def unresolved_requests():
-        """View for stale unresolved requests"""
+        """View for ALL unresolved requests"""
         try:
-            stale_time = datetime.utcnow() - timedelta(hours=24)  # Configurable threshold
-            requests = HelpRequest.query.filter(
-                HelpRequest.status == 'unresolved',
-                HelpRequest.created_at < stale_time
-            ).order_by(HelpRequest.created_at).all()
-            
+            requests = HelpRequest.query.filter_by(status='unresolved').order_by(HelpRequest.created_at).all()
             return render_template('unresolved_requests.html', requests=requests)
         except Exception as e:
             logger.error(f"Error loading unresolved requests: {e}")

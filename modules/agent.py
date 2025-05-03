@@ -13,7 +13,7 @@ from livekit.agents import Agent, AgentSession, JobContext, RunContext, WorkerOp
 from livekit.plugins import deepgram, openai, silero
 
 from modules.help_requests import create_help_request, get_knowledge_for_question, memory_help_requests
-from modules.knowledge_base import get_salon_info_standalone
+from modules.knowledge_base import get_salon_info_standalone, init_sample_salon_data, add_to_knowledge_base
 from persistent_callbacks import callback_registry
 
 # Configure logging
@@ -25,17 +25,68 @@ FLASK_API_URL = "http://localhost:5000"
 # Global dictionary to store active sessions by ID
 active_sessions = {}
 
+# Initialize sample knowledge base
+def init_sample_knowledge():
+    """Initialize sample knowledge base items for testing."""
+    sample_knowledge = [
+        {
+            "question": "How much is a men's haircut?",
+            "answer": "Our men's haircuts are $30."
+        },
+        {
+            "question": "Do you take walk-ins?",
+            "answer": "Yes, we accept walk-ins based on availability, but appointments are recommended to ensure you can see your preferred stylist."
+        },
+        {
+            "question": "What are your cancellation policies?",
+            "answer": "We request at least 24 hours notice for cancellations. Late cancellations may incur a fee of 50% of the service price."
+        },
+        # Add more common Q&A pairs as needed
+    ]
+    
+    for item in sample_knowledge:
+        add_to_knowledge_base(item["question"], item["answer"])
+    
+    logger.info("Sample knowledge base initialized")
+
 class SalonAgent(Agent):
     def __init__(self):
         salon_info = get_salon_info_standalone()
         logger.info("Retrieved salon info for agent")
         
         instructions = (
-            "You are an AI receptionist for a salon. Your name is Bella. "
-            "Be friendly, professional, and helpful. "
-            f"Here's what you know about the salon:\n\n{salon_info}\n\n"
-            "If you don't know the answer to something, use the request_help tool "
-            "and tell the customer you'll check with your supervisor and get back to them."
+            "You are Bella, an AI receptionist for Elegant Beauty Salon. Be friendly, professional, and helpful while maintaining the following guidelines:\n\n"
+            
+            "# CORE PRINCIPLES:\n"
+            "1. ONLY provide information that you're 100% certain about from the salon information below.\n"
+            "2. When asked about ANY specific service or pricing NOT explicitly listed in your knowledge, use the request_help tool immediately.\n"
+            "3. NEVER make assumptions about services, prices, availability, or stylist information.\n"
+            "4. Do not generalize pricing from one service to another (e.g., don't apply men's haircut pricing to women's haircuts).\n\n"
+            
+            "# WHEN TO USE THE request_help TOOL:\n"
+            "- When asked about ANY specific service details not explicitly mentioned below\n"
+            "- When asked about pricing for ANY service not explicitly listed with a price\n"
+            "- When asked about stylist availability or specific stylist information\n"
+            "- When asked about appointment availability for specific dates/times\n"
+            "- When asked about product recommendations or availability\n"
+            "- When asked policy questions not covered in your information\n\n"
+            
+            f"# SALON INFORMATION:\n{salon_info}\n\n"
+            
+            "# EXAMPLE INTERACTIONS:\n\n"
+            "## Example 1 - INCORRECT approach:\n"
+            "Customer: \"How much is a women's haircut?\"\n"
+            "Bella: \"Our haircuts start at $30.\" (DON'T do this if you don't have explicit pricing for women's haircuts)\n\n"
+            
+            "## Example 1 - CORRECT approach:\n"
+            "Customer: \"How much is a women's haircut?\"\n"
+            "Bella: \"I don't have the exact pricing for women's haircuts. Let me check with my supervisor for you. One moment please.\" (Then use request_help tool)\n\n"
+            
+            "## Example 2 - CORRECT approach:\n"
+            "Customer: \"What are your hours?\"\n"
+            "Bella: \"We're open Monday through Friday from 9:00 AM to 7:00 PM, Saturday from 10:00 AM to 5:00 PM, and we're closed on Sundays.\"\n\n"
+            
+            "Remember: It's better to use the request_help tool than to provide potentially incorrect information."
         )
         
         super().__init__(instructions=instructions)
@@ -155,6 +206,10 @@ async def entrypoint(ctx: JobContext):
     try:
         logger.info("Connecting to LiveKit...")
         await ctx.connect()
+        
+        # Initialize sample data
+        init_sample_salon_data()
+        init_sample_knowledge()
         
         salon_agent = SalonAgent()
         await salon_agent.start_webhook_server()

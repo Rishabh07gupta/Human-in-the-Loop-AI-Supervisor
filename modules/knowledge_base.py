@@ -12,9 +12,14 @@ memory_salon_info = {
     "address": "123 Style Street, Fashion City, FC 12345",
     "phone": "555-123-4567",
     "hours": "Monday-Friday: 9:00 AM - 7:00 PM, Saturday: 10:00 AM - 5:00 PM, Sunday: Closed",
-    "services": "Haircuts, Coloring, Styling, Manicures, Pedicures, Facials",
+    "services_overview": "Haircuts, Coloring, Styling, Manicures, Pedicures, Facials",
     "website": "www.elegantbeauty.com",
-    "booking": "Call 555-123-4567 or book online at www.elegantbeauty.com/book"
+    "booking": "Call 555-123-4567 or book online at www.elegantbeauty.com/book",
+    "services_detailed": {
+        "men_haircut": {"name": "Men's Haircut", "price": "$30"},
+        "women_haircut": {"name": "Women's Haircut", "price": "$50"},
+        # Other services will be added as proper pricing is confirmed
+    }
 }
 
 class MockKnowledgeItem:
@@ -36,8 +41,17 @@ def get_salon_info_standalone() -> str:
     """
     # Format as a string from the memory dict
     formatted_info = ""
+    
+    # Add basic info
     for key, value in memory_salon_info.items():
-        formatted_info += f"{key}: {value}\n"
+        if key != "services_detailed":  # Skip detailed services for separate formatting
+            formatted_info += f"{key}: {value}\n"
+    
+    # Add detailed services if available
+    if "services_detailed" in memory_salon_info:
+        formatted_info += "\nDetailed Services:\n"
+        for service_id, service_info in memory_salon_info["services_detailed"].items():
+            formatted_info += f"- {service_info['name']}: {service_info['price']}\n"
     
     return formatted_info
 
@@ -208,10 +222,14 @@ def init_sample_salon_data():
         "address": "123 Style Street, Fashion City, FC 12345",
         "phone": "555-123-4567",
         "hours": "Monday-Friday: 9:00 AM - 7:00 PM, Saturday: 10:00 AM - 5:00 PM, Sunday: Closed",
-        "services": "Haircuts, Coloring, Styling, Manicures, Pedicures, Facials",
+        "services_overview": "Haircuts, Coloring, Styling, Manicures, Pedicures, Facials",
         "website": "www.elegantbeauty.com",
         "booking": "Call 555-123-4567 or book online at www.elegantbeauty.com/book"
     }
     
     for key, value in sample_data.items():
         add_salon_info(key, value)
+    
+    # Add detailed service information
+    add_salon_info("services_details_men_haircut", "Men's Haircut: $30")
+    add_salon_info("services_details_Women_haircut", "Women's Haircut: $50")
