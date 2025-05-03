@@ -2,6 +2,7 @@ from datetime import datetime
 import logging
 from typing import List, Optional, Dict
 import requests
+from database import db, HelpRequest
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -10,16 +11,20 @@ logger = logging.getLogger(__name__)
 memory_help_requests = {}
 next_request_id = 1
 
+# Flask API URL
+FLASK_API_URL = "http://localhost:5000"
+
 class MockHelpRequest:
     """Mock HelpRequest class for use outside of Flask context"""
-    def __init__(self, id, customer_id, question, status='pending'):
-        self.id = id
+    def __init__(self, customer_id, question, status='pending'):
+        self.id = None  # Will be set after syncing
         self.customer_id = customer_id
         self.question = question
         self.status = status
         self.answer = None
         self.created_at = datetime.utcnow()
         self.resolved_at = None
+        self.webhook_url = None
 
 def is_flask_context_available():
     """Check if we're in a Flask application context"""
@@ -31,6 +36,7 @@ def is_flask_context_available():
 
 def create_help_request(customer_id: str, question: str, webhook_url: str):
     try:
+        # Existing database code
         from database import db, HelpRequest
         help_request = HelpRequest(
             customer_id=customer_id,
@@ -43,15 +49,19 @@ def create_help_request(customer_id: str, question: str, webhook_url: str):
         memory_help_requests[help_request.id] = help_request
         return help_request
     except Exception as e:
-        global next_request_id
+        # Create mock request without ID first
         help_request = MockHelpRequest(
-            id=next_request_id,
             customer_id=customer_id,
             question=question
         )
         help_request.webhook_url = webhook_url
+        
+        # Assign temporary memory ID
+        global next_request_id
+        help_request.id = next_request_id
         memory_help_requests[next_request_id] = help_request
         next_request_id += 1
+        
         return help_request
 
 def resolve_request(request_id: int, answer: str):
@@ -79,7 +89,7 @@ def resolve_request(request_id: int, answer: str):
     except Exception as e:
         help_request.status = 'resolved'
         help_request.answer = answer
-        # Still try to add to knowledge base even if DB fails
+        # Still try to add to knowledge base even if DB fails   
         from modules.knowledge_base import add_to_knowledge_base
         add_to_knowledge_base(help_request.question, answer)
     
@@ -89,10 +99,39 @@ def resolve_request(request_id: int, answer: str):
 def get_knowledge_for_question(question: str):
     """
     Check if we already have knowledge for a similar question.
-    Works with or without Flask context.
+    First tries the Flask API endpoint, falls back to in-memory check.
     """
     try:
-        # Try to use Flask-SQLAlchemy
+        # Try to use the Flask API to query the knowledge base
+        response = requests.post(
+            f"{FLASK_API_URL}/api/knowledge/query",
+            json={'question': question},
+            timeout=5
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('success') and data.get('found'):
+                # Create a knowledge item object from the API response
+                class KnowledgeResult:
+                    def __init__(self, id, question, answer):
+                        self.id = id
+                        self.question = question
+                        self.answer = answer
+                
+                return KnowledgeResult(
+                    id=data.get('id'),
+                    question=question,
+                    answer=data.get('answer')
+                )
+        
+        # If API call fails or doesn't find anything, continue to other methods
+        
+    except Exception as e:
+        logger.warning(f"API knowledge query failed: {e}")
+    
+    try:
+        # Try to use Flask-SQLAlchemy directly
         from database import KnowledgeItem
         
         if not is_flask_context_available():

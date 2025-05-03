@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 import ssl
 import os
+import uuid
 import certifi
 import requests
 from aiohttp import web
@@ -11,14 +12,18 @@ from aiohttp import web
 from livekit.agents import Agent, AgentSession, JobContext, RunContext, WorkerOptions, cli, function_tool
 from livekit.plugins import deepgram, openai, silero
 
-from modules.help_requests import create_help_request, get_knowledge_for_question
+from modules.help_requests import create_help_request, get_knowledge_for_question, memory_help_requests
 from modules.knowledge_base import get_salon_info_standalone
+from persistent_callbacks import callback_registry
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 FLASK_API_URL = "http://localhost:5000"
+
+# Global dictionary to store active sessions by ID
+active_sessions = {}
 
 class SalonAgent(Agent):
     def __init__(self):
@@ -34,8 +39,9 @@ class SalonAgent(Agent):
         )
         
         super().__init__(instructions=instructions)
-        self.request_callbacks = {}
+        self.session_id = str(uuid.uuid4())
         self.webhook_server = None
+        logger.info(f"Created new agent with session ID: {self.session_id}")
 
     async def start_webhook_server(self):
         app = web.Application()
@@ -47,21 +53,39 @@ class SalonAgent(Agent):
         self.webhook_server = runner
         logger.info("Webhook server started on port 5001")
 
+    def register_session(self, session):
+        """Register the agent session for callbacks"""
+        active_sessions[self.session_id] = session
+        logger.info(f"Registered session {self.session_id}")
+
     async def handle_resolved_webhook(self, request):
         try:
             request_id = int(request.match_info['request_id'])
             data = await request.json()
             answer = data.get('answer')
+            
             if not answer:
                 return web.Response(text="Missing answer", status=400)
             
-            if request_id in self.request_callbacks:
-                await self.request_callbacks[request_id](answer)
-                del self.request_callbacks[request_id]
-                return web.Response(text="OK")
-            else:
-                logger.warning(f"Callback not found for request {request_id}")
+            # Get session ID from persistent registry
+            session_id = callback_registry.get_session_for_request(request_id)
+            if not session_id:
+                logger.warning(f"No session found for request {request_id}")
                 return web.Response(text="Request ID not found", status=404)
+            
+            # Find the session
+            session = active_sessions.get(session_id)
+            if not session:
+                logger.warning(f"Session {session_id} not found for request {request_id}")
+                return web.Response(text="Session not found", status=404)
+            
+            # Generate the reply
+            await session.generate_reply(instructions=f"My supervisor says: {answer}")
+            
+            # Remove from registry after successful handling
+            callback_registry.remove(request_id)
+            return web.Response(text="OK")
+                
         except Exception as e:
             logger.error(f"Webhook error: {e}")
             return web.Response(text=str(e), status=500)
@@ -84,11 +108,8 @@ class SalonAgent(Agent):
         webhook_url = f"http://localhost:5001/webhook/resolved"
         help_request = create_help_request(customer_id, question, webhook_url)
         
-        async def callback(answer: str):
-            await context.session.generate_reply(instructions=f"My supervisor says: {answer}")
-        
-        self.request_callbacks[help_request.id] = callback
-        logger.info(f"Registered callback for request {help_request.id}")
+        # Register request in the persistent registry
+        callback_registry.register(help_request.id, self.session_id)
         
         try:
             self._sync_request_to_flask(help_request)
@@ -99,17 +120,33 @@ class SalonAgent(Agent):
 
     def _sync_request_to_flask(self, help_request):
         payload = {
-            "id": help_request.id,
             "customer_id": help_request.customer_id,
             "question": help_request.question,
-            "status": help_request.status,
             "webhook_url": help_request.webhook_url,
             "created_at": help_request.created_at.isoformat()
         }
         
-        response = requests.post(f"{FLASK_API_URL}/api/sync-request", json=payload, timeout=5)
-        if response.status_code != 200:
-            logger.error(f"Sync failed: {response.text}")
+        try:
+            response = requests.post(f"{FLASK_API_URL}/api/sync-request", 
+                                json=payload, timeout=5)
+            if response.status_code == 200:
+                response_data = response.json()
+                new_id = response_data['id']
+                
+                # Update memory storage
+                if help_request.id in memory_help_requests:
+                    del memory_help_requests[help_request.id]
+                    
+                help_request.id = new_id
+                memory_help_requests[new_id] = help_request
+                
+                # Update callback registry with new ID
+                callback_registry.remove(help_request.id)
+                callback_registry.register(new_id, self.session_id)
+                    
+        except Exception as e:
+            logger.error(f"Sync failed: {e}")
+            # Keep using the memory ID if sync fails
 
 async def entrypoint(ctx: JobContext):
     os.environ["SSL_CERT_FILE"] = certifi.where()
@@ -128,6 +165,9 @@ async def entrypoint(ctx: JobContext):
             llm=openai.LLM(model="gpt-4o-mini"),
             tts=openai.TTS(voice="alloy"),
         )
+        
+        # Register the session in the agent and global registry
+        salon_agent.register_session(session)
         
         await session.start(agent=salon_agent, room=ctx.room)
         logger.info(f"Session started in room: {ctx.room.name}")

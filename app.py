@@ -294,11 +294,7 @@ def register_routes(app):
     def sync_request_from_agent():
         try:
             data = request.json
-            existing_request = HelpRequest.query.get(data['id']) if 'id' in data else None
-            
-            if existing_request:
-                return jsonify({'success': True, 'id': existing_request.id})
-                
+            # Remove check for existing request by ID since we're not sending it anymore
             new_request = HelpRequest(
                 customer_id=data['customer_id'],
                 question=data['question'],
@@ -308,6 +304,8 @@ def register_routes(app):
             )
             db.session.add(new_request)
             db.session.commit()
+            # Sync the new request to memory storage
+            memory_help_requests[new_request.id] = new_request
             return jsonify({'success': True, 'id': new_request.id})
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)}), 500
@@ -328,6 +326,88 @@ def register_routes(app):
         except Exception as e:
             logger.error(f"Error checking request status: {str(e)}")
             return jsonify({'error': str(e)}), 500
+    
+    @app.route('/api/knowledge/query', methods=['POST'])
+    def query_knowledge():
+        """API endpoint to query knowledge base with fuzzy matching"""
+        try:
+            data = request.json
+            question = data.get('question')
+            
+            if not question:
+                return jsonify({'success': False, 'error': 'Question is required'}), 400
+                
+            from database import KnowledgeItem
+            
+            # First try exact match
+            knowledge = KnowledgeItem.query.filter_by(question=question).first()
+            
+            if knowledge:
+                return jsonify({
+                    'success': True,
+                    'found': True,
+                    'answer': knowledge.answer,
+                    'id': knowledge.id,
+                    'match_type': 'exact'
+                })
+            
+            # If no exact match, try substring matching (case insensitive)
+            # Look for questions that contain the current question or vice versa
+            all_items = KnowledgeItem.query.all()
+            question_lower = question.lower()
+            
+            # 1. Check if any knowledge item's question contains our query
+            for item in all_items:
+                if question_lower in item.question.lower():
+                    return jsonify({
+                        'success': True,
+                        'found': True,
+                        'answer': item.answer,
+                        'id': item.id,
+                        'match_type': 'substring'
+                    })
+                    
+            # 2. Check if our query contains any knowledge item's question
+            for item in all_items:
+                if item.question.lower() in question_lower:
+                    return jsonify({
+                        'success': True,
+                        'found': True,
+                        'answer': item.answer,
+                        'id': item.id,
+                        'match_type': 'superset'
+                    })
+            
+            # 3. Check for word overlap (if at least 70% of words match)
+            query_words = set(question_lower.split())
+            for item in all_items:
+                item_words = set(item.question.lower().split())
+                if not item_words:
+                    continue
+                    
+                # Calculate overlap ratio
+                intersection = query_words.intersection(item_words)
+                smaller_set_size = min(len(query_words), len(item_words))
+                if smaller_set_size > 0:
+                    overlap_ratio = len(intersection) / smaller_set_size
+                    if overlap_ratio >= 0.7:  # At least 70% word overlap
+                        return jsonify({
+                            'success': True,
+                            'found': True,
+                            'answer': item.answer,
+                            'id': item.id,
+                            'match_type': 'word_overlap',
+                            'overlap_ratio': overlap_ratio
+                        })
+            
+            # No match found
+            return jsonify({
+                'success': True,
+                'found': False
+            })
+        except Exception as e:
+            logger.error(f"Error querying knowledge base: {e}")
+            return jsonify({'success': False, 'error': str(e)}), 500
 
     @app.route('/simulate/call', methods=['GET'])
     def simulate_call():
