@@ -16,7 +16,6 @@ next_request_id = 1
 FLASK_API_URL = "http://localhost:5000"
 
 class MockHelpRequest:
-    """Mock HelpRequest class for use outside of Flask context"""
     def __init__(self, customer_id, question, status='pending'):
         self.id = None  # Will be set after syncing
         self.customer_id = customer_id
@@ -78,7 +77,7 @@ def resolve_request(request_id: int, answer: str):
         from database import db
         help_request.status = 'resolved'
         help_request.answer = answer
-        help_request.resolved_at = datetime.utcnow()  # Make sure to set resolved_at
+        help_request.resolved_at = datetime.utcnow() 
         db.session.commit()
         
         # Add to knowledge base

@@ -217,6 +217,7 @@ def register_routes(app):
     @app.route('/resolve/<int:request_id>', methods=['POST'])
     def resolve(request_id):
         answer = request.form.get('answer')
+        redirect_to_kb = request.form.get('redirect_to_knowledge') == 'true'
         
         if not answer:
             return jsonify({'success': False, 'error': 'Answer is required'}), 400
@@ -225,6 +226,9 @@ def register_routes(app):
             help_request = resolve_request(request_id, answer)
             if not help_request:
                 return jsonify({'success': False, 'error': 'Request not found'}), 404
+            
+            if redirect_to_kb:
+                return redirect(url_for('knowledge_base'))
             
             from modules.knowledge_base import add_to_knowledge_base
             add_to_knowledge_base(help_request.question, answer)
@@ -295,7 +299,6 @@ def register_routes(app):
     def sync_request_from_agent():
         try:
             data = request.json
-            # Remove check for existing request by ID since we're not sending it anymore
             new_request = HelpRequest(
                 customer_id=data['customer_id'],
                 question=data['question'],

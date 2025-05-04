@@ -20,7 +20,8 @@
             <td>{{ req.question }}</td>
             <td>{{ req.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
             <td>
-                <form action="/knowledge" method="POST">
+                <form action="{{ url_for('resolve', request_id=req.id) }}" method="POST">
+                    <input type="hidden" name="redirect_to_knowledge" value="true">
                     <input type="text" name="answer" placeholder="Answer..." required>
                     <button type="submit" class="btn btn-sm btn-primary">Resolve</button>
                 </form>

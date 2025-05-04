@@ -41,7 +41,7 @@ def init_sample_knowledge():
             "question": "What are your cancellation policies?",
             "answer": "We request at least 24 hours notice for cancellations. Late cancellations may incur a fee of 50% of the service price."
         },
-        # Add more common Q&A pairs as needed
+        
     ]
     
     for item in sample_knowledge:
@@ -54,45 +54,55 @@ class SalonAgent(Agent):
         salon_info = get_salon_info_standalone()
         logger.info("Retrieved salon info for agent")
         
-        instructions = (
-            "You are Bella, an AI receptionist for Elegant Beauty Salon. Be friendly, professional, and helpful while maintaining the following guidelines:\n\n"
+        instructions = f"""You are Bella, the AI receptionist for Elegant Beauty Salon & Spa. Your role is to provide exceptional customer service while strictly adhering to these protocols:
+
+            # CORE OPERATING FRAMEWORK
+            1. INFORMATION ACCURACY
+            - Only provide information explicitly contained in the salon details below
+            - Never extrapolate, estimate, or guess service details
+            - IMPORTANT: For any uncertain information, IMMEDIATELY use the request_help function BEFORE responding to the customer
+
+            2. CONVERSATIONAL PROTOCOLS
+            - Maintain a warm, professional tone (friendly but not overly casual)
+            - Use natural salon terminology (e.g., "root touch-up" not "color application")
+            - Mirror the customer's language style (formal/casual)
+            - Anticipate follow-up questions (e.g., mention aftercare when booking color services)
+
+            3. ESCALATION TRIGGERS
+            Immediately use request_help WITHOUT saying "Let me check that for you" first for:
+            - Any service/pricing not explicitly listed
+            - Appointment availability requests
+            - Complex service combinations (e.g., "Can I get highlights with a keratin treatment?")
+            - Special requests (e.g., disabilities, allergies)
+            - Complaints or sensitive situations
+            - ANY questions about discounts, promotions, or pricing exceptions
             
-            "# CORE PRINCIPLES:\n"
-            "1. ONLY provide information that you're 100% certain about from the salon information below.\n"
-            "2. When asked about ANY specific service or pricing NOT explicitly listed in your knowledge, use the request_help tool immediately.\n"
-            "3. NEVER make assumptions about services, prices, availability, or stylist information.\n"
-            "4. Do not generalize pricing from one service to another (e.g., don't apply men's haircut pricing to women's haircuts).\n\n"
-            
-            "# WHEN TO USE THE request_help TOOL:\n"
-            "- When asked about ANY specific service details not explicitly mentioned below\n"
-            "- When asked about pricing for ANY service not explicitly listed with a price\n"
-            "- When asked about stylist availability or specific stylist information\n"
-            "- When asked about appointment availability for specific dates/times\n"
-            "- When asked about product recommendations or availability\n"
-            "- When asked policy questions not covered in your information\n\n"
-            
-            f"# SALON INFORMATION:\n{salon_info}\n\n"
-            
-            "# EXAMPLE INTERACTIONS:\n\n"
-            "## Example 1 - INCORRECT approach:\n"
-            "Customer: \"How much is a women's haircut?\"\n"
-            "Bella: \"Our haircuts start at $30.\" (DON'T do this if you don't have explicit pricing for women's haircuts)\n\n"
-            
-            "## Example 1 - CORRECT approach:\n"
-            "Customer: \"How much is a women's haircut?\"\n"
-            "Bella: \"I don't have the exact pricing for women's haircuts. Let me check with my supervisor for you. One moment please.\" (Then use request_help tool)\n\n"
-            
-            "## Example 2 - CORRECT approach:\n"
-            "Customer: \"What are your hours?\"\n"
-            "Bella: \"We're open Monday through Friday from 9:00 AM to 7:00 PM, Saturday from 10:00 AM to 5:00 PM, and we're closed on Sundays.\"\n\n"
-            
-            "Remember: It's better to use the request_help tool than to provide potentially incorrect information."
-        )
+            4. CRITICAL PROCEDURE
+            - NEVER say "Let me check that for you" without IMMEDIATELY calling the request_help function
+            - Always call request_help FIRST, then respond to the customer based on the result
+            - Create help requests IMMEDIATELY - don't wait for the customer to follow up
+
+            # SALON KNOWLEDGE BASE
+            {self._format_salon_info(salon_info)}
+
+            # ADVANCED HANDLING EXAMPLES
+            - When asked about unavailable times: "I don't see that slot available, but let me check alternatives"
+            - For product questions: "We carry professional-grade products like [brand]. Would you like specific recommendations?"
+            - For service combinations: "Those services can be combined, but I'll verify with our stylists for timing"
+            """
         
         super().__init__(instructions=instructions)
         self.session_id = str(uuid.uuid4())
         self.webhook_server = None
         logger.info(f"Created new agent with session ID: {self.session_id}")
+
+    def _format_salon_info(self, info):
+        """Structure the salon info for optimal LLM comprehension"""
+        return "\n".join([
+            "=== SALON DETAILS ===",
+            info.replace(":", ":\n- ").replace("\n", "\n- "),
+            "====================="
+        ])
 
     async def start_webhook_server(self):
         app = web.Application()
@@ -143,6 +153,10 @@ class SalonAgent(Agent):
 
     @function_tool
     async def request_help(self, context: RunContext, question: str):
+        """
+        Immediately create a help request and notify the supervisor.
+        This function should be called BEFORE responding to the customer with "Let me check" messages.
+        """
         customer_id = None
         if hasattr(context, 'session') and context.session and hasattr(context.session, 'room'):
             customer_id = context.session.room.name
@@ -150,12 +164,15 @@ class SalonAgent(Agent):
         if not customer_id:
             customer_id = f"customer-{int(datetime.now().timestamp())}"
         
-        logger.info(f"Customer ID: {customer_id}")
+        logger.info(f"Creating help request for {customer_id}: {question}")
         
+        # First check if we already have this answer in our knowledge base
         knowledge = get_knowledge_for_question(question)
         if knowledge:
+            logger.info(f"Found knowledge for question: {question}")
             return f"I found an answer: {knowledge.answer}"
         
+        # If not in knowledge base, create a help request
         webhook_url = f"http://localhost:5001/webhook/resolved"
         help_request = create_help_request(customer_id, question, webhook_url)
         
@@ -164,10 +181,11 @@ class SalonAgent(Agent):
         
         try:
             self._sync_request_to_flask(help_request)
+            logger.info(f"Successfully created help request ID: {help_request.id}")
         except Exception as e:
             logger.error(f"Sync failed: {e}")
         
-        return "I'll check with my supervisor and get back to you shortly."
+        return "I'm checking with my supervisor about this question and will get back to you shortly."
 
     def _sync_request_to_flask(self, help_request):
         payload = {
@@ -227,7 +245,7 @@ async def entrypoint(ctx: JobContext):
         await session.start(agent=salon_agent, room=ctx.room)
         logger.info(f"Session started in room: {ctx.room.name}")
         
-        await session.generate_reply(instructions="Greet the caller warmly.")
+        await session.generate_reply(instructions=" Greet the caller warmly. Remember that for any questions about discounts, prices not in your knowledge base, appointment availability, or special services, you should IMMEDIATELY use the request_help function")
         
         while True:
             await asyncio.sleep(10)

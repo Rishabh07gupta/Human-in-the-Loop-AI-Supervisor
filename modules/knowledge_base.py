@@ -1,6 +1,8 @@
 import logging
 from typing import Dict, List, Optional
 from datetime import datetime
+from database import db, KnowledgeItem
+from flask import has_app_context
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -18,7 +20,7 @@ memory_salon_info = {
     "services_detailed": {
         "men_haircut": {"name": "Men's Haircut", "price": "$30"},
         "women_haircut": {"name": "Women's Haircut", "price": "$50"},
-        # Other services will be added as proper pricing is confirmed
+        # Other services can be added 
     }
 }
 
@@ -44,7 +46,7 @@ def get_salon_info_standalone() -> str:
     
     # Add basic info
     for key, value in memory_salon_info.items():
-        if key != "services_detailed":  # Skip detailed services for separate formatting
+        if key != "services_detailed": 
             formatted_info += f"{key}: {value}\n"
     
     # Add detailed services if available
@@ -99,8 +101,7 @@ def add_to_knowledge_base(question: str, answer: str):
     """
     try:
         # Try to use Flask-SQLAlchemy
-        from database import db, KnowledgeItem
-        from flask import has_app_context
+        
         
         if not has_app_context():
             raise ValueError("No Flask app context")
@@ -218,14 +219,66 @@ def add_salon_info(key: str, value: str):
 def init_sample_salon_data():
     """Initialize sample salon data for testing."""
     sample_data = {
-        "name": "Elegant Beauty Salon",
+        # Basic Info
+        "name": "Elegant Beauty Salon & Spa",
         "address": "123 Style Street, Fashion City, FC 12345",
         "phone": "555-123-4567",
-        "hours": "Monday-Friday: 9:00 AM - 7:00 PM, Saturday: 10:00 AM - 5:00 PM, Sunday: Closed",
-        "services_overview": "Haircuts, Coloring, Styling, Manicures, Pedicures, Facials",
-        "website": "www.elegantbeauty.com",
-        "booking": "Call 555-123-4567 or book online at www.elegantbeauty.com/book"
-    }
+        "emergency_contact": "555-987-6543",
+        "hours": "Monday-Friday: 9:00 AM - 7:00 PM\nSaturday: 10:00 AM - 5:00 PM\nSunday: Closed",
+        "holiday_hours": "Closed on Christmas Day and New Year's Day",
+        
+        # Services with detailed pricing
+        "services": """Hair Services:
+        - Women's Haircut: $60-$90 (based on length)
+        - Men's Haircut: $35-$50
+        - Kid's Haircut (12 & under): $25-$40
+        - Blowout/Styling: $40-$75
+        - Full Highlights: $120-$180
+        - Partial Highlights: $90-$140
+        - Balayage: $150-$220
+        - Perm: $80-$150
+        - Deep Conditioning: $25-$45
+
+        Nail Services:
+        - Basic Manicure: $25
+        - Deluxe Manicure: $40
+        - Gel Manicure: $45
+        - Basic Pedicure: $40
+        - Spa Pedicure: $60
+        - Gel Pedicure: $65
+
+        Skincare:
+        - Basic Facial: $80
+        - Anti-Aging Facial: $120
+        - Acne Treatment: $100
+        - Microdermabrasion: $90""",
+                
+                # Team Information
+                "stylists": """Our Specialists:
+        - Mia (Master Colorist): Specializes in balayage and corrective color
+        - James (Barber): Expert in fades and beard grooming
+        - Sophia (Extensions Specialist): Certified in tape-in and keratin extensions
+        - David (Texture Expert): Specializes in curly hair and perms""",
+                
+                # Policies
+                "cancellation_policy": """We require 24 hours notice for cancellations.
+        Late cancellations incur a 50% fee.
+        No-shows will be charged 100% of the service price.""",
+                
+                "child_policy": """Children under 12 must be accompanied by an adult.
+        We have a dedicated kids' area with toys and entertainment.""",
+                
+                "accessibility": """Our salon is fully wheelchair accessible.
+        We offer sensory-friendly appointments upon request.""",
+                
+                # Products
+                "retail_products": """We carry:
+        - Olaplex Hair Repair System
+        - Redken Color Protect Shampoo
+        - OPI GelColor Polish
+        - Dermalogica Skincare Line
+        - Brazilian Blowout Products"""
+            }
     
     for key, value in sample_data.items():
         add_salon_info(key, value)

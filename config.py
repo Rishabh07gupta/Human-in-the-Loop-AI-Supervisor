@@ -31,6 +31,6 @@ class Config:
     # Request Timeout Configuration
     REQUEST_TIMEOUT_MINUTES = int(os.environ.get('REQUEST_TIMEOUT_MINUTES', 30))
 
-    SUPERVISOR_WEBHOOK_URL = os.getenv('SUPERVISOR_WEBHOOK_URL')  # e.g. "http://localhost:8000/webhook"
+    SUPERVISOR_WEBHOOK_URL = os.getenv('SUPERVISOR_WEBHOOK_URL')
     NOTIFICATION_LOG_FILE = 'supervisor_alerts.log'
     DEAD_LETTER_THRESHOLD_HOURS = 24 

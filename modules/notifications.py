@@ -31,7 +31,7 @@ class NotificationService:
             with open(self.log_file, 'a') as f:
                 f.write(message + '\n')
                 
-            # 3. Optional webhook
+            # 3.  webhook
             webhook_url = os.getenv('SUPERVISOR_WEBHOOK_URL')
             if webhook_url:
                 requests.post(
