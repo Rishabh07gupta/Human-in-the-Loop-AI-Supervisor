@@ -1,24 +1,29 @@
 import os
 from datetime import datetime, timedelta
 import logging
-import threading
-import time
-
-from flask import Flask, current_app, render_template, request, redirect, url_for, jsonify
+from flask import Flask, current_app, render_template, request, redirect, url_for, jsonify, abort
 from apscheduler.schedulers.background import BackgroundScheduler
 import click
 from flask.cli import with_appcontext
-
 from config import Config
-from database import db, HelpRequest
+from database import db, HelpRequest, KnowledgeItem
 from modules.help_requests import (
-    get_help_request, get_pending_requests, 
-    resolve_request, mark_request_unresolved,
-    memory_help_requests, next_request_id
+    get_help_request as get_hr_by_id,
+    get_pending_requests as get_all_pending_hr,
+    resolve_request as resolve_hr_func,
+    mark_request_unresolved as mark_hr_unresolved_func, 
+    memory_help_requests,
+    next_request_id as memory_next_hr_id
 )
 from modules.knowledge_base import (
-    get_all_knowledge, init_sample_salon_data,
-    memory_knowledge_items, memory_salon_info
+    get_all_knowledge as get_all_kb_items,
+    init_sample_salon_data,
+    add_to_knowledge_base as add_kb_item,
+    memory_knowledge_items,
+    memory_salon_info,
+    build_or_load_faiss_index,
+    search_knowledge_semantic,
+    get_embedding_model
 )
 
 logging.basicConfig(
@@ -27,171 +32,173 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-scheduler = BackgroundScheduler()
-scheduler.start()
+scheduler = BackgroundScheduler(daemon=True)
 
 def create_app(config_class=Config):
-
-    app = Flask(__name__)
+    app = Flask(__name__, instance_path=config_class.INSTANCE_PATH)
     app.config.from_object(config_class)
-    
+
+    if not os.path.exists(app.instance_path):
+        try:
+            os.makedirs(app.instance_path)
+            logger.info(f"Instance path created at: {app.instance_path}")
+        except OSError as e:
+            logger.error(f"Could not create instance path {app.instance_path}: {e}")
+
     db.init_app(app)
     app.cli.add_command(init_db_command)
-    
+    app.cli.add_command(build_index_command)
+
     register_routes(app)
-    
+    register_error_handlers(app)
+
     with app.app_context():
-        db.create_all()
-        sync_memory_storage()
+        try:
+            db.create_all()
+            logger.info("Database tables checked/created.")
+        except Exception as e:
+            logger.error(f"Error during db.create_all(): {e}", exc_info=True)
+
+        sync_memory_storage_from_db()
         
-        if not getattr(app, '_timeout_checker_started', False):
-            app._timeout_checker_started = True
-            scheduler.add_job(
-                check_request_timeouts,
-                'interval',
-                minutes=5,
-                id='timeout_checker',
-                replace_existing=True,
-                args=[app]
-            )
-    
+        logger.info("Initializing semantic search components...")
+        try:
+            get_embedding_model()
+            build_or_load_faiss_index()
+            logger.info("Semantic search components initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize semantic search components: {e}", exc_info=True)
+
+        if not scheduler.running:
+            try:
+                scheduler.start()
+                logger.info("APScheduler started.")
+            except Exception as e:
+                logger.error(f"Failed to start APScheduler: {e}", exc_info=True)
+
+        timeout_job_id = 'timeout_checker_job'
+        if scheduler.running and not scheduler.get_job(timeout_job_id):
+            try:
+                scheduler.add_job(
+                    check_request_timeouts_job,
+                    'interval',
+                    minutes=app.config.get('REQUEST_TIMEOUT_CHECK_INTERVAL_MINUTES', 5),
+                    id=timeout_job_id,
+                    replace_existing=True,
+                    args=[app]
+                )
+                logger.info(f"'{timeout_job_id}' scheduled successfully.")
+            except Exception as e:
+                logger.error(f"Error scheduling '{timeout_job_id}': {e}", exc_info=True)
+        elif scheduler.get_job(timeout_job_id):
+             logger.info(f"'{timeout_job_id}' already scheduled.")
     return app
 
-def sync_memory_storage():
-    """Sync in-memory storage with database for consistent state"""
-    logger.info("Syncing memory storage with database...")
-    try:
-        from database import HelpRequest
-        help_requests = HelpRequest.query.all()
-        
-        global memory_help_requests, next_request_id
-        memory_help_requests.clear()
-        
-        highest_id = 0
-        for req in help_requests:
-            memory_help_requests[req.id] = req
-            if req.id > highest_id:
-                highest_id = req.id
-        
-        next_request_id = highest_id + 1
-        from database import KnowledgeItem
-        knowledge_items = KnowledgeItem.query.all()
-        
-        global memory_knowledge_items
-        memory_knowledge_items.clear()
-        
-        for item in knowledge_items:
-            memory_knowledge_items[item.id] = item
-        
-        from database import SalonInfo
-        salon_info = SalonInfo.query.all()
-        
-        global memory_salon_info
-        memory_salon_info.clear()
-        
-        for info in salon_info:
-            memory_salon_info[info.key] = info.value
-            
-        logger.info("Memory storage synced successfully")
-    except Exception as e:
-        logger.error(f"Error syncing memory storage: {e}")
 
-def check_request_timeouts(app):
-    """Check for pending requests that have timed out."""
-    with app.app_context():
-        timeout_minutes = app.config.get('REQUEST_TIMEOUT_MINUTES', 30)
-        timeout_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+def sync_memory_storage_from_db():
+    logger.info("Syncing in-memory storage with database...")
+    global memory_help_requests, memory_next_hr_id, memory_knowledge_items, memory_salon_info
+    try:
+        help_requests_db = HelpRequest.query.all()
+        memory_help_requests.clear()
+        highest_hr_id = 0
+        for req in help_requests_db:
+            memory_help_requests[req.id] = req
+            if req.id > highest_hr_id:
+                highest_hr_id = req.id
+        memory_next_hr_id = highest_hr_id + 1
+        logger.info(f"Synced {len(memory_help_requests)} help requests. Next memory ID: {memory_next_hr_id}")
+
+        knowledge_items_db = KnowledgeItem.query.all()
+        memory_knowledge_items.clear()
+        for item in knowledge_items_db:
+            memory_knowledge_items[item.id] = item
+        logger.info(f"Synced {len(memory_knowledge_items)} knowledge items.")
+        logger.info("In-memory storage sync complete.")
+    except Exception as e:
+        logger.error(f"Error syncing memory storage: {e}", exc_info=True)
+
+
+def check_request_timeouts_job(app_instance):
+    with app_instance.app_context():
+        timeout_minutes = current_app.config.get('REQUEST_TIMEOUT_MINUTES', 30)
+        timeout_delta = timedelta(minutes=timeout_minutes)
+        if timeout_delta is None:
+            logger.error("REQUEST_TIMEOUT_MINUTES not configured correctly. Timeout check skipped.")
+            return
+
+        cutoff_time = datetime.utcnow() - timeout_delta
+        logger.info(f"Running request timeout check for requests older than {cutoff_time} (timeout: {timeout_minutes} mins)")
         
         try:
-       
-            timed_out_requests = HelpRequest.query.filter_by(status='pending')\
-                .filter(HelpRequest.created_at < timeout_time).all()
+            timed_out_requests = HelpRequest.query.filter(
+                HelpRequest.status == 'pending',
+                HelpRequest.created_at < cutoff_time
+            ).all()
             
+            if not timed_out_requests:
+                logger.info("No requests timed out in this check.")
+                return
+
             for req in timed_out_requests:
                 req.status = 'unresolved'
-                logger.info(f"Request {req.id} timed out and marked unresolved")
-                logger.warning(
-                    f"Request {req.id} timed out after {timeout_minutes} minutes. "
-                    f"Question: {req.question[:100]}..."
-                )
-   
                 if req.id in memory_help_requests:
-                    memory_help_requests[req.id].status = 'unresolved'
+                     memory_help_requests[req.id].status = 'unresolved'
+                logger.warning(
+                    f"Request {req.id} (Customer: {req.customer_id}, Q: '{req.question[:50]}...') "
+                    f"timed out after {timeout_minutes} minutes and marked unresolved."
+                )
             
-            if timed_out_requests:
-                db.session.commit()
-                logger.info(f"Marked {len(timed_out_requests)} requests as unresolved due to timeout")
+            db.session.commit()
+            logger.info(f"Marked {len(timed_out_requests)} requests as unresolved due to timeout.")
         except Exception as e:
-            logger.error(f"Error checking request timeouts: {e}")
+            logger.error(f"Error checking request timeouts: {e}", exc_info=True)
+            db.session.rollback()
+
 
 @click.command('init-db')
 @with_appcontext
 def init_db_command():
-    """Clear existing data and create new tables."""
+    click.echo(f"Initializing database at: {current_app.config['SQLALCHEMY_DATABASE_URI']}")
+    click.echo('Initializing sample salon and knowledge data...')
     try:
-        instance_path = current_app.instance_path
-        click.echo(f'Checking instance path: {instance_path}')
-        
-        if not os.path.exists(instance_path):
-            try:
-                os.makedirs(instance_path)
-                click.echo(f'Created instance folder at {instance_path}')
-            except Exception as e:
-                click.echo(f'Error creating instance directory: {str(e)}')
-                raise
-        
-        click.echo(f"Database URI: {current_app.config['SQLALCHEMY_DATABASE_URI']}")
-        
-        db_path = os.path.join(instance_path, "supervisor.db")
-        db_dir = os.path.dirname(db_path)
-        click.echo(f"Database path: {db_path}")
-        
-        test_file = os.path.join(instance_path, "test_write.txt")
-        try:
-            with open(test_file, 'w') as f:
-                f.write("test")
-            os.remove(test_file)
-            click.echo("Write permission confirmed")
-        except Exception as e:
-            click.echo(f"Warning: Cannot write to instance directory: {str(e)}")
-        
-        click.echo('Initializing sample data...')
         init_sample_salon_data()
-        click.echo('Initialized the database and added sample data.')
+        db.session.commit()
+        click.echo('Sample data initialization process finished.')
         
-        # Sync memory storage
-        sync_memory_storage()
+        sync_memory_storage_from_db()
         click.echo('Memory storage synced with database.')
+
+        click.echo('Building/verifying FAISS index...')
+        build_or_load_faiss_index(force_rebuild=True)
+        click.echo('FAISS index process finished.')
+        click.echo('Database initialization complete.')
     except Exception as e:
-        click.echo(f'Error initializing database: {str(e)}')
-        import traceback
-        traceback.print_exc()
-        raise
+        click.echo(f'Error during init-db: {str(e)}')
+        logger.error(f"Error during init-db command: {e}", exc_info=True)
+        db.session.rollback()
 
-def initialize_app():
-    """Function to initialize app data (can be called from shell)"""
-    init_sample_salon_data()
-    # Sync memory storage
-    sync_memory_storage()
 
-def get_all_knowledge():
-    """Safe wrapper for get_all_knowledge function"""
+@click.command('build-index')
+@with_appcontext
+def build_index_command():
+    click.echo('Starting FAISS index build/rebuild...')
     try:
-        from database import KnowledgeItem
-        return KnowledgeItem.query.all()
+        get_embedding_model()
+        build_or_load_faiss_index(force_rebuild=True)
+        click.echo('FAISS index build/rebuild completed successfully.')
     except Exception as e:
-        logger.warning(f"Could not query knowledge from database: {e}. Using memory storage.")
-        return list(memory_knowledge_items.values())
+        click.echo(f'Error building FAISS index: {str(e)}')
+        logger.error(f"Error during build-index command: {e}", exc_info=True)
 
 def register_routes(app):
-    # Dashboard route
     @app.route('/')
-    def dashboard():
+    def dashboard(): # Endpoint name: 'dashboard'
         try:
-            pending_count = len(get_pending_requests())
+            pending_count = HelpRequest.query.filter_by(status='pending').count()
             resolved_count = HelpRequest.query.filter_by(status='resolved').count()
             unresolved_count = HelpRequest.query.filter_by(status='unresolved').count()
-            knowledge_count = len(get_all_knowledge())
+            knowledge_count = KnowledgeItem.query.count()
             
             stats = {
                 'pending': pending_count,
@@ -199,106 +206,118 @@ def register_routes(app):
                 'unresolved': unresolved_count,
                 'knowledge': knowledge_count
             }
-            
             return render_template('dashboard.html', stats=stats)
         except Exception as e:
-            logger.error(f"Error loading dashboard: {e}")
+            logger.error(f"Error loading dashboard: {e}", exc_info=True)
+            abort(500, description="Could not load dashboard statistics.")
 
-    # Pending requests route
+
     @app.route('/pending')
-    def pending_requests():
+    def pending_requests(): # Endpoint name: 'pending_requests'
         try:
-            requests = get_pending_requests()
-            return render_template('pending_requests.html', requests=requests)
+            requests_data = get_all_pending_hr()
+            return render_template('pending_requests.html', requests=requests_data)
         except Exception as e:
-            logger.error(f"Error loading pending requests: {e}")
+            logger.error(f"Error loading pending requests: {e}", exc_info=True)
+            abort(500, description="Could not load pending requests.")
 
-    # Resolve request route
+
     @app.route('/resolve/<int:request_id>', methods=['POST'])
-    def resolve(request_id):
+    def resolve_request(request_id): # Endpoint name: 'resolve_request'
         answer = request.form.get('answer')
-        redirect_to_kb = request.form.get('redirect_to_knowledge') == 'true'
-        
-        if not answer:
-            return jsonify({'success': False, 'error': 'Answer is required'}), 400
+        if not answer or not answer.strip():
+            return jsonify({'success': False, 'error': 'Answer is required and cannot be empty.'}), 400
         
         try:
-            help_request = resolve_request(request_id, answer)
-            if not help_request:
-                return jsonify({'success': False, 'error': 'Request not found'}), 404
+            help_request_obj = resolve_hr_func(request_id, answer) 
+            if not help_request_obj:
+                return jsonify({'success': False, 'error': 'Request not found or could not be resolved.'}), 404
             
-            if redirect_to_kb:
-                return redirect(url_for('knowledge_base'))
-            
-            from modules.knowledge_base import add_to_knowledge_base
-            add_to_knowledge_base(help_request.question, answer)
-                
             return jsonify({
-                'success': True, 
-                'message': f'Request {request_id} resolved successfully',
+                'success': True,
+                'message': f'Request {request_id} resolved successfully.',
                 'request': {
-                    'id': help_request.id,
-                    'question': help_request.question,
-                    'answer': help_request.answer,
-                    'status': help_request.status,
-                    'resolved_at': help_request.resolved_at.isoformat() if help_request.resolved_at else None
+                    'id': help_request_obj.id,
+                    'question': help_request_obj.question,
+                    'answer': help_request_obj.answer,
+                    'status': help_request_obj.status, 
+                    'resolved_at': help_request_obj.resolved_at.isoformat() if help_request_obj.resolved_at else None
                 }
             })
         except Exception as e:
-            logger.error(f"Error resolving request {request_id}: {str(e)}")
-            return jsonify({'success': False, 'error': str(e)}), 500
+            logger.error(f"Error resolving request {request_id}: {str(e)}", exc_info=True)
+            return jsonify({'success': False, 'error': f'An unexpected error occurred: {str(e)}'}), 500
 
-    # Mark request as unresolved route
+
     @app.route('/unresolved/<int:request_id>', methods=['POST'])
-    def mark_unresolved(request_id):
+    def mark_unresolved(request_id): # Endpoint name: 'mark_unresolved'
         try:
-            help_request = mark_request_unresolved(request_id)
-            if not help_request:
-                return jsonify({'success': False, 'error': 'Request not found'}), 404
-                
+            help_request_obj = mark_hr_unresolved_func(request_id)
+            if not help_request_obj:
+                return jsonify({'success': False, 'error': 'Request not found.'}), 404
+        
+            # We return the status as 'unresolved' because that's the action performed.
             return jsonify({
-                'success': True, 
-                'message': f'Request {request_id} marked as unresolved'
+                'success': True,
+                'message': f'Request {request_id} marked as unresolved.',
+                 'request_status': 'unresolved' 
             })
         except Exception as e:
-            logger.error(f"Error marking request {request_id} as unresolved: {str(e)}")
+            logger.error(f"Error marking request {request_id} as unresolved: {str(e)}", exc_info=True)
+            # Check if it's a DetachedInstanceError and handle if specifically needed
+            if "DetachedInstanceError" in str(e):
+                 logger.error(f"DetachedInstanceError encountered for request {request_id}. This might indicate a session issue.")
+                 return jsonify({'success': False, 'error': 'Session issue after marking unresolved. Please refresh.'}), 500
             return jsonify({'success': False, 'error': str(e)}), 500
 
-    # Knowledge base route
-    @app.route('/knowledge')
-    def knowledge_base():
-        try:
-            knowledge_items = get_all_knowledge()
-            return render_template('knowledge_base.html', items=knowledge_items)
-        except Exception as e:
-            logger.error(f"Error loading knowledge base: {e}")
 
-    # API route for request details
-    @app.route('/api/request/<int:request_id>')
-    def request_details(request_id):
+    @app.route('/knowledge')
+    def knowledge_base(): # Endpoint name: 'knowledge_base'
         try:
-            help_request = get_help_request(request_id)
-            
+            items = get_all_kb_items()
+            return render_template('knowledge_base.html', items=items)
+        except Exception as e:
+            logger.error(f"Error loading knowledge base: {e}", exc_info=True)
+            abort(500, description="Could not load knowledge base.")
+
+    @app.route('/unresolved')
+    def unresolved_requests(): # Endpoint name: 'unresolved_requests'
+        try:
+            requests_data = HelpRequest.query.filter_by(status='unresolved').order_by(HelpRequest.created_at.desc()).all()
+            return render_template('unresolved_requests.html', requests=requests_data)
+        except Exception as e:
+            logger.error(f"Error loading unresolved requests: {e}", exc_info=True)
+
+    # --- API Routes ---
+    @app.route('/api/request/<int:request_id>')
+    def api_request_details(request_id): # Endpoint name: 'api_request_details'
+        try:
+            help_request = get_hr_by_id(request_id)
             if not help_request:
-                return jsonify({'error': 'Request not found'}), 404
+                return jsonify({'success': False, 'error': 'Request not found'}), 404
             
             return jsonify({
+                'success': True,
                 'id': help_request.id,
                 'customer_id': help_request.customer_id,
                 'question': help_request.question,
                 'status': help_request.status,
-                'created_at': help_request.created_at.isoformat(),
+                'created_at': help_request.created_at.isoformat() if help_request.created_at else None,
                 'resolved_at': help_request.resolved_at.isoformat() if help_request.resolved_at else None,
                 'answer': help_request.answer
             })
         except Exception as e:
-            logger.error(f"Error getting request details: {str(e)}")
-            return jsonify({'error': str(e)}), 500
+            logger.error(f"Error getting request details for ID {request_id}: {str(e)}", exc_info=True)
+            return jsonify({'success': False, 'error': str(e)}), 500
+
     
     @app.route('/api/sync-request', methods=['POST'])
-    def sync_request_from_agent():
+    def api_sync_request(): # Endpoint name: 'api_sync_request'
         try:
             data = request.json
+            if not data or not all(k in data for k in ['customer_id', 'question', 'webhook_url', 'created_at']):
+                return jsonify({'success': False, 'error': 'Missing required fields in sync request.'}), 400
+
             new_request = HelpRequest(
                 customer_id=data['customer_id'],
                 question=data['question'],
@@ -308,122 +327,154 @@ def register_routes(app):
             )
             db.session.add(new_request)
             db.session.commit()
-            # Sync the new request to memory storage
-            memory_help_requests[new_request.id] = new_request
-            return jsonify({'success': True, 'id': new_request.id})
+            
+            if new_request.id:
+                memory_help_requests[new_request.id] = new_request
+                logger.info(f"Help request {new_request.id} synced from agent and added to DB & memory.")
+                return jsonify({'success': True, 'id': new_request.id, 'message': 'Request synced successfully.'}), 201
+            else:
+                logger.error("Failed to get new_request.id after commit during API sync.")
+                return jsonify({'success': False, 'error': "Failed to create request in DB."}), 500
         except Exception as e:
+            db.session.rollback()
+            logger.error(f"Error syncing request from agent: {str(e)}", exc_info=True)
             return jsonify({'success': False, 'error': str(e)}), 500
+
     
     @app.route('/api/check-request/<int:request_id>')
-    def check_request_status(request_id):
+    def api_check_request(request_id): # Endpoint name: 'api_check_request'
         try:
-            help_request = get_help_request(request_id)
-            
+            help_request = get_hr_by_id(request_id)
             if not help_request:
-                return jsonify({'error': 'Request not found'}), 404
+                return jsonify({'success': False, 'error': 'Request not found'}), 404
             
             return jsonify({
+                'success': True,
                 'id': help_request.id,
                 'status': help_request.status,
                 'answer': help_request.answer if help_request.status == 'resolved' else None
             })
         except Exception as e:
-            logger.error(f"Error checking request status: {str(e)}")
-            return jsonify({'error': str(e)}), 500
+            logger.error(f"Error checking request status for ID {request_id}: {str(e)}", exc_info=True)
+            return jsonify({'success': False, 'error': str(e)}), 500
+
     
     @app.route('/api/knowledge/query', methods=['POST'])
-    def query_knowledge():
-        """API endpoint to query knowledge base with fuzzy matching"""
+    def api_knowledge_query(): # Endpoint name: 'api_knowledge_query'
         try:
             data = request.json
-            question = data.get('question')
+            question_text = data.get('question')
             
-            if not question:
-                return jsonify({'success': False, 'error': 'Question is required'}), 400
-                
-            from database import KnowledgeItem
+            if not question_text or not question_text.strip():
+                return jsonify({'success': False, 'found': False, 'error': 'Question is required and cannot be empty.'}), 400
             
-            # First try exact match
-            knowledge = KnowledgeItem.query.filter_by(question=question).first()
-            
-            if knowledge:
-                return jsonify({
-                    'success': True,
-                    'found': True,
-                    'answer': knowledge.answer,
-                    'id': knowledge.id,
-                    'match_type': 'exact'
-                })
-            
-            # If no exact match, try substring matching (case insensitive)
-            # Look for questions that contain the current question or vice versa
-            all_items = KnowledgeItem.query.all()
-            question_lower = question.lower()
-            
-            # 1. Check if any knowledge item's question contains our query
-            for item in all_items:
-                if question_lower in item.question.lower():
-                    return jsonify({
-                        'success': True,
-                        'found': True,
-                        'answer': item.answer,
-                        'id': item.id,
-                        'match_type': 'substring'
-                    })
-                    
-            # 2. Check if our query contains any knowledge item's question
-            for item in all_items:
-                if item.question.lower() in question_lower:
-                    return jsonify({
-                        'success': True,
-                        'found': True,
-                        'answer': item.answer,
-                        'id': item.id,
-                        'match_type': 'superset'
-                    })
-            
-            # 3. Check for word overlap (if at least 70% of words match)
-            query_words = set(question_lower.split())
-            for item in all_items:
-                item_words = set(item.question.lower().split())
-                if not item_words:
-                    continue
-                    
-                # Calculate overlap ratio
-                intersection = query_words.intersection(item_words)
-                smaller_set_size = min(len(query_words), len(item_words))
-                if smaller_set_size > 0:
-                    overlap_ratio = len(intersection) / smaller_set_size
-                    if overlap_ratio >= 0.7:  # At least 70% word overlap
-                        return jsonify({
-                            'success': True,
-                            'found': True,
-                            'answer': item.answer,
-                            'id': item.id,
-                            'match_type': 'word_overlap',
-                            'overlap_ratio': overlap_ratio
+            top_k_semantic = current_app.config.get('SEMANTIC_SEARCH_TOP_K', 3)
+            semantic_score_threshold = current_app.config.get('SEMANTIC_SCORE_THRESHOLD', 0.70)
+            keyword_score_threshold = current_app.config.get('KEYWORD_SCORE_THRESHOLD', 0.85)
+            final_result_threshold = current_app.config.get('FINAL_RESULT_THRESHOLD', 0.65)
+
+            semantic_matches_details = []
+            raw_semantic_matches = search_knowledge_semantic(question_text, top_k=top_k_semantic)
+            for match in raw_semantic_matches:
+                if match['score'] >= semantic_score_threshold:
+                    item = KnowledgeItem.query.get(match["id"])
+                    if item:
+                        semantic_matches_details.append({
+                            "id": item.id, "question": item.question, "answer": item.answer,
+                            "score": match["score"], "match_type": "semantic"
                         })
             
-            # No match found
-            return jsonify({
-                'success': True,
-                'found': False
-            })
+            keyword_matches_details = []
+            exact_match_item = KnowledgeItem.query.filter(KnowledgeItem.question.ilike(question_text)).first()
+            if exact_match_item:
+                keyword_matches_details.append({
+                    "id": exact_match_item.id, "question": exact_match_item.question, "answer": exact_match_item.answer,
+                    "score": 1.0, "match_type": "exact_keyword"
+                })
+            else:
+                all_db_items = KnowledgeItem.query.all()
+                query_words_lower = set(question_text.lower().split())
+                for item in all_db_items:
+                    item_words_lower = set(item.question.lower().split())
+                    if not item_words_lower: continue
+                    
+                    intersection = query_words_lower.intersection(item_words_lower)
+                    union_len = len(query_words_lower.union(item_words_lower))
+                    overlap_score = len(intersection) / union_len if union_len > 0 else 0.0
+
+                    if overlap_score >= keyword_score_threshold:
+                         keyword_matches_details.append({
+                            "id": item.id, "question": item.question, "answer": item.answer,
+                            "score": overlap_score, "match_type": "keyword_overlap"
+                        })
+                keyword_matches_details = sorted(keyword_matches_details, key=lambda x: x['score'], reverse=True)
+
+            final_candidates = {}
+            for res_list in [keyword_matches_details, semantic_matches_details]:
+                for res in res_list:
+                    if res['id'] not in final_candidates:
+                        final_candidates[res['id']] = res
+                    else:
+                        if res['match_type'] == 'exact_keyword':
+                            final_candidates[res['id']] = res
+                        elif final_candidates[res['id']]['match_type'] != 'exact_keyword' and \
+                             res['score'] > final_candidates[res['id']]['score']:
+                             final_candidates[res['id']] = res
+
+            if not final_candidates:
+                return jsonify({'success': True, 'found': False, 'message': 'No relevant knowledge found.'})
+
+            ranked_results = sorted(
+                list(final_candidates.values()),
+                key=lambda x: (1 if x['match_type'] == 'exact_keyword' else 0, x['score']),
+                reverse=True
+            )
+
+            best_match = ranked_results[0]
+            if best_match['score'] >= final_result_threshold:
+                return jsonify({
+                    'success': True, 'found': True,
+                    'id': best_match['id'], 'question': best_match['question'],
+                    'answer': best_match['answer'], 'score': best_match['score'],
+                    'match_type': best_match['match_type']
+                })
+            else:
+                return jsonify({
+                    'success': True, 'found': False,
+                    'message': f'Best match score {best_match["score"]:.2f} below threshold {final_result_threshold}.',
+                    'debug_best_match_type': best_match['match_type']
+                })
+
         except Exception as e:
-            logger.error(f"Error querying knowledge base: {e}")
-            return jsonify({'success': False, 'error': str(e)}), 500
-    
-    @app.route('/unresolved')
-    def unresolved_requests():
-        """View for ALL unresolved requests"""
-        try:
-            requests = HelpRequest.query.filter_by(status='unresolved').order_by(HelpRequest.created_at).all()
-            return render_template('unresolved_requests.html', requests=requests)
-        except Exception as e:
-            logger.error(f"Error loading unresolved requests: {e}")
-            return render_template('error.html', error=str(e))
+            logger.error(f"Error querying knowledge base API: {e}", exc_info=True)
+            return jsonify({'success': False, 'found': False, 'error': f'An internal error occurred: {str(e)}'}), 500
+
+def register_error_handlers(app):
+    @app.errorhandler(404)
+    def page_not_found_error(error):
+        logger.warning(f"404 error encountered for path: {request.path}. Description: {error.description if hasattr(error, 'description') else 'Not found'}")
+        return jsonify(error="Not Found", message=str(error.description if hasattr(error, 'description') else "The requested URL was not found on the server.")), 404
+
+    @app.errorhandler(500)
+    def internal_server_error_handler(error):
+        err_description = "Internal Server Error"
+        if hasattr(error, 'description') and error.description:
+            err_description = str(error.description)
+        elif hasattr(error, 'original_exception') and error.original_exception:
+             err_description = str(error.original_exception)
+
+        if 'db' in globals() and hasattr(db, 'session') and db.session.is_active:
+            db.session.rollback()
+            
+        logger.error(f"500 internal server error: {err_description}", exc_info=True)
+        return jsonify(error="Internal Server Error", message=err_description), 500
+
 
 app = create_app()
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=Config.DEBUG)
+    app.run(
+        host=app.config.get('HOST', '0.0.0.0'),
+        port=app.config.get('PORT', 5000),
+        debug=app.config.get('DEBUG', False)
+    )
