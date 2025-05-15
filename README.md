@@ -149,7 +149,7 @@ livekit-cli create-token \
 
 3. **Timeout Handling**: Automatic marking of unresolved requests after timeout period
 
-4. **Fuzzy Matching:** Knowledge base queries use multiple matching strategies
+4. **Semantic Search Matching:** Knowledge base queries use multiple matching strategies
 
 5. **Webhook Support:** Allows for integration with external notification systems
 
